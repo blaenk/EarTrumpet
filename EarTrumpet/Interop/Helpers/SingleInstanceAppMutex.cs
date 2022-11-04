@@ -11,7 +11,7 @@ namespace EarTrumpet.Interop.Helpers
         public static bool TakeExclusivity()
         {
             var assembly = Assembly.GetExecutingAssembly();
-            var mutexName = $"Local\\{assembly.GetName().Name}-0e510f7b-aed2-40b0-ad72-d2d3fdc89a02";
+            var mutexName = $"Local\\{assembly.GetName().Name}-a5d1bbcd-8f69-41c7-be73-96d237374935";
 
             s_mutex = new Mutex(true, mutexName, out bool mutexCreated);
             if (!mutexCreated)
