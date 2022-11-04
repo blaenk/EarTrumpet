@@ -12,13 +12,106 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
+using LgTv.Clients;
+using LgTv.Clients.Mouse;
+using LgTv.Connections;
+using LgTv.Stores;
+using System.Windows.Forms;
+using System.IO;
+using MessageBox = System.Windows.MessageBox;
+using Bugsnag;
+using LgTv.Networking;
+using System.Net.NetworkInformation;
+using Quartz;
+using Quartz.Impl;
 
 namespace EarTrumpet
 {
+    public class MorningRoutine
+    {
+        private const bool SecureConnection = false;
+        private const string TvHost = "192.168.254.173";
+        private const int TvPort = 3000;
+        private const string ClientKeyStoreFileName = "client-keys.json";
+        private static readonly string ClientKeyStoreFilePath = Path.Combine(Path.GetDirectoryName(typeof(App).Assembly.Location), ClientKeyStoreFileName);
+
+        public async Task GraduallyIncreaseVolume(LgTvClient client, TimeSpan timeSpan, int from, int to)
+        {
+            int volume = from;
+            TimeSpan slice = TimeSpan.FromMilliseconds(timeSpan.TotalMilliseconds / (to - from));
+
+            while (volume <= to)
+            {
+                Console.WriteLine($"Setting volume to {volume}");
+                await client.Audio.SetVolume(volume);
+                await Task.Delay(slice);
+
+                volume++;
+            }
+        }
+
+        public async Task Execute()
+        {
+            await Console.Out.WriteLineAsync("Running MorningRoutine");
+
+            // Initialization
+            var client = new LgTvClient(
+                () => new LgTvConnection(),
+                new JsonFileClientKeyStore(ClientKeyStoreFilePath),
+                SecureConnection, TvHost, TvPort);
+
+            await WakeOnLan.SendMagicPacket(App.MAC_ADDRESS);
+
+            await Task.Delay(1000);
+
+            await client.Connect();
+            await client.MakeHandShake();
+
+            await Task.Delay(1000);
+
+            dynamic payload = new
+            {
+                id = "youtube.leanback.v4",
+                contentId = "list=UU6isuGFtrmhgWNgFOP6h_fA"
+            };
+
+            await client.SendCommand(new LgTv.RequestMessage("ssap://system.launcher/launch", payload));
+
+            await Task.Delay(1000);
+
+            dynamic outputPayload = new
+            {
+                output = "tv_speaker"
+            };
+
+            await client.SendCommand(new LgTv.RequestMessage("ssap://com.webos.service.apiadapter/audio/changeSoundOutput", outputPayload));
+
+            await Task.Delay(1000);
+
+            await GraduallyIncreaseVolume(client, new TimeSpan(0, 0, 15), 0, 15);
+        }
+    }
+
+    public class MorningJob : IJob
+    {
+        public async Task Execute(IJobExecutionContext context)
+        {
+            await Console.Out.WriteLineAsync("Greetings from HelloJob!");
+
+            var morningRoutine = new MorningRoutine();
+
+            await morningRoutine.Execute();
+        }
+    }
+
     public partial class App
     {
+        // 	ac:5a:f0:9a:50:d5
+        public static string MAC_ADDRESS = "80-5B-65-8A-6D-5E";
+
         public static bool IsShuttingDown { get; private set; }
         public static bool HasIdentity { get; private set; }
         public static bool HasDevIdentity { get; private set; }
@@ -38,9 +131,26 @@ namespace EarTrumpet
         private ErrorReporter _errorReporter;
         private AppSettings _settings;
 
+        private const string ClientKeyStoreFileName = "client-keys.json";
+
+        private static readonly string ClientKeyStoreFilePath = Path.Combine(Path.GetDirectoryName(typeof(App).Assembly.Location), ClientKeyStoreFileName);
+
+        private const bool SecureConnection = false;
+        private const string TvHost = "192.168.254.173";
+        private const int TvPort = 3000;
+
+        private LgTvClient lgTvClient;
+
+        IScheduler scheduler;
+
         private void OnAppStartup(object sender, StartupEventArgs e)
         {
             Exit += (_, __) => IsShuttingDown = true;
+            Exit += async (_, __) =>
+            {
+                // and last shut down the scheduler when you are ready to close your program
+                await scheduler.Shutdown();
+            };
             HasIdentity = PackageHelper.CheckHasIdentity();
             HasDevIdentity = PackageHelper.HasDevIdentity();
             PackageVersion = PackageHelper.GetVersion(HasIdentity);
@@ -48,6 +158,9 @@ namespace EarTrumpet
 
             _settings = new AppSettings();
             _errorReporter = new ErrorReporter(_settings);
+
+            var schedTask = InitializeScheduler();
+            schedTask.Wait();
 
             if (SingleInstanceAppMutex.TakeExclusivity())
             {
@@ -67,6 +180,85 @@ namespace EarTrumpet
             {
                 Shutdown();
             }
+        }
+
+        private async Task InitializeScheduler()
+        {
+            if (scheduler == null)
+            {
+                StdSchedulerFactory factory = new StdSchedulerFactory();
+                scheduler = await factory.GetScheduler();
+            }
+
+            // and start it off
+            await scheduler.Start();
+
+            // define the job and tie it to our HelloJob class
+            IJobDetail job = JobBuilder.Create<MorningJob>()
+                .Build();
+
+            // Trigger the job to run now, and then repeat every 10 seconds
+            ITrigger trigger = TriggerBuilder.Create()
+                .WithCronSchedule("0 15 10 * * ?")
+                .Build();
+
+            // Tell quartz to schedule the job using our trigger
+            await scheduler.ScheduleJob(job, trigger);
+
+            Console.WriteLine("Scheduled job");
+        }
+
+        private async Task<LgTvClient> InitializeTv()
+        {
+            if (lgTvClient != null)
+            {
+                return lgTvClient;
+            }
+
+            // Initialization
+            var client = new LgTvClient(
+                () => new LgTvConnection(),
+                new JsonFileClientKeyStore(ClientKeyStoreFilePath),
+                SecureConnection, TvHost, TvPort);
+
+            //await client.Power.TurnOn();
+
+            await client.Connect();
+            await client.MakeHandShake();
+
+            lgTvClient = client;
+
+            return lgTvClient;
+
+            /*var systemInfo = await client.Info.GetSystemInfo();
+            var softwareInfo = await client.Info.GetSoftwareInfo();
+            var connectionInfo = await client.Info.GetConnectionInfo();
+
+
+            // Volume control
+            await client.Audio.VolumeDown();
+            await client.Audio.VolumeUp();
+
+
+            // Playback control
+            await client.Playback.Pause();
+            await client.Playback.Play();
+
+
+            var channels = await client.Channels.GetChannels();
+            var inputs = await client.Inputs.GetInputs();
+            var apps = await client.Apps.GetApps();
+
+            using (var mouse = await client.GetMouse())
+            {
+                await mouse.SendButton(ButtonType.Up);
+                await mouse.SendButton(ButtonType.Left);
+                await mouse.SendButton(ButtonType.Right);
+                await mouse.SendButton(ButtonType.Down);
+            }
+
+
+            await client.Power.TurnOff();*/
         }
 
         private void ContinueStartup()
@@ -163,53 +355,88 @@ namespace EarTrumpet
 
         private IEnumerable<ContextMenuItem> GetTrayContextMenuItems()
         {
-            var ret = new List<ContextMenuItem>(CollectionViewModel.AllDevices.OrderBy(x => x.DisplayName).Select(dev => new ContextMenuItem
-            {
-                DisplayName = dev.DisplayName,
-                IsChecked = dev.Id == CollectionViewModel.Default?.Id,
-                Command = new RelayCommand(() => dev.MakeDefaultDevice()),
-            }));
-
-            if (!ret.Any())
-            {
-                ret.Add(new ContextMenuItem
-                {
-                    DisplayName = EarTrumpet.Properties.Resources.ContextMenuNoDevices,
-                    IsEnabled = false,
-                });
-            }
+            var ret = new List<ContextMenuItem>();
 
             ret.AddRange(new List<ContextMenuItem>
                 {
                     new ContextMenuSeparator(),
                     new ContextMenuItem
                     {
-                        DisplayName = EarTrumpet.Properties.Resources.WindowsLegacyMenuText,
+                        DisplayName = "Submenu",
                         Children = new List<ContextMenuItem>
                         {
-                            new ContextMenuItem { DisplayName = EarTrumpet.Properties.Resources.LegacyVolumeMixerText, Command =  new RelayCommand(LegacyControlPanelHelper.StartLegacyAudioMixer) },
-                            new ContextMenuItem { DisplayName = EarTrumpet.Properties.Resources.PlaybackDevicesText, Command = new RelayCommand(() => LegacyControlPanelHelper.Open("playback")) },
-                            new ContextMenuItem { DisplayName = EarTrumpet.Properties.Resources.RecordingDevicesText, Command = new RelayCommand(() => LegacyControlPanelHelper.Open("recording")) },
-                            new ContextMenuItem { DisplayName = EarTrumpet.Properties.Resources.SoundsControlPanelText, Command = new RelayCommand(() => LegacyControlPanelHelper.Open("sounds")) },
-                            new ContextMenuItem { DisplayName = EarTrumpet.Properties.Resources.OpenSoundSettingsText, Command = new RelayCommand(() => SettingsPageHelper.Open("sound")) },
+                            new ContextMenuItem { DisplayName = "Nested", Command =  new RelayCommand(() =>
+                            {
+                                MessageBox.Show("Nested");
+                            }) },
                         },
                     },
                     new ContextMenuSeparator(),
-                });
+                    new ContextMenuItem { DisplayName = "Power on", Command =  new RelayCommand(async () =>
+                            {
+                                // Run on a loop until awakened.
+                                //var mac = "80-5B-65-8A-6D-5E";
+                                //var parsed = PhysicalAddress.Parse(mac);
+                                //WakeOnLan.SendWakeOnLan(parsed);
+                                //Console.WriteLine("Sent WoL packet");
+                                //var client = await InitializeTv();
 
-            var addonItems = AddonManager.Host.TrayContextMenuItems?.OrderBy(x => x.NotificationAreaContextMenuItems.FirstOrDefault()?.DisplayName).SelectMany(ext => ext.NotificationAreaContextMenuItems);
-            if (addonItems != null && addonItems.Any())
-            {
-                ret.AddRange(addonItems);
-                ret.Add(new ContextMenuSeparator());
-            }
+                                //await client.Power.TurnOn();
 
-            ret.AddRange(new List<ContextMenuItem>
-                {
-                    new ContextMenuItem { DisplayName = EarTrumpet.Properties.Resources.FullWindowTitleText, Command = new RelayCommand(_mixerWindow.OpenOrBringToFront) },
-                    new ContextMenuItem { DisplayName = EarTrumpet.Properties.Resources.SettingsWindowText, Command = new RelayCommand(_settingsWindow.OpenOrBringToFront) },
+                                //var ipAddress = IPAddressResolver.GetIPAddress(TvHost);
+                                //var macAddress = MacAddressResolver.GetMacAddress(ipAddress);
+
+                                await WakeOnLan.SendMagicPacket(MAC_ADDRESS);
+                            }) },
+                    new ContextMenuItem { DisplayName = "Morning Routine", Command =  new RelayCommand(async () =>
+                            {
+                                var job = new MorningRoutine();
+
+                                await job.Execute();
+                            }) },
+                    new ContextMenuItem { DisplayName = "Power off", Command =  new RelayCommand(async () =>
+                            {
+                                var client = await InitializeTv();
+
+                                await client.Power.TurnOff();
+                            }) },
+                    new ContextMenuItem { DisplayName = "Play", Command =  new RelayCommand(async () =>
+                            {
+                                var client = await InitializeTv();
+
+                                await client.Playback.Play();
+                            }) },
+                    new ContextMenuItem { DisplayName = "Pause", Command =  new RelayCommand(async () =>
+                            {
+                                var client = await InitializeTv();
+
+                                await client.Playback.Pause();
+                            }) },
+                    new ContextMenuItem { DisplayName = "YouTube", Command =  new RelayCommand(async () =>
+                            {
+                                var client = await InitializeTv();
+
+                                dynamic payload = new {
+                                    id = "youtube.leanback.v4",
+                                    contentId = "v=CzH5gHaiYg4"
+                                };
+
+                                await client.SendCommand(new LgTv.RequestMessage("ssap://system.launcher/launch", payload));
+                            }) },
+                    new ContextMenuItem { DisplayName = "Plex", Command =  new RelayCommand(async () =>
+                            {
+                                var client = await InitializeTv();
+
+                                dynamic payload = new {
+                                    id = "cdp-30",
+                                    contentId = "v=CzH5gHaiYg4"
+                                };
+
+                                await client.SendCommand(new LgTv.RequestMessage("ssap://system.launcher/launch", payload));
+                            }) },
                     new ContextMenuItem { DisplayName = EarTrumpet.Properties.Resources.ContextMenuExitTitle, Command = new RelayCommand(Shutdown) },
                 });
+
             return ret;
         }
 
