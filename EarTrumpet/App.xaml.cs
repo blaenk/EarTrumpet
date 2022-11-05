@@ -121,6 +121,7 @@ namespace EarTrumpet
 
         public FlyoutWindow FlyoutWindow { get; private set; }
         public DeviceCollectionViewModel CollectionViewModel { get; private set; }
+        public DeviceCollectionViewModel RecordingCollectionViewModel { get; private set; }
 
         private static readonly Stopwatch s_appTimer = Stopwatch.StartNew();
         private FlyoutViewModel _flyoutViewModel;
@@ -265,15 +266,20 @@ namespace EarTrumpet
         {
             ((UI.Themes.Manager)Resources["ThemeManager"]).Load();
 
+            var recordingDeviceManager = WindowsAudioFactory.Create(AudioDeviceKind.Recording);
+            RecordingCollectionViewModel = new DeviceCollectionViewModel(recordingDeviceManager, _settings);
+
             var deviceManager = WindowsAudioFactory.Create(AudioDeviceKind.Playback);
             deviceManager.Loaded += (_, __) => CompleteStartup();
             CollectionViewModel = new DeviceCollectionViewModel(deviceManager, _settings);
 
-            _trayIcon = new ShellNotifyIcon(new TaskbarIconSource(CollectionViewModel, _settings));
+            _trayIcon = new ShellNotifyIcon(new TaskbarIconSource(RecordingCollectionViewModel, _settings));
             Exit += (_, __) => _trayIcon.IsVisible = false;
-            CollectionViewModel.TrayPropertyChanged += () => _trayIcon.SetTooltip(CollectionViewModel.GetTrayToolTip());
 
-            _flyoutViewModel = new FlyoutViewModel(CollectionViewModel, () => _trayIcon.SetFocus(), _settings);
+            CollectionViewModel.TrayPropertyChanged += () => { };
+            RecordingCollectionViewModel.TrayPropertyChanged += () => _trayIcon.SetTooltip(RecordingCollectionViewModel.GetTrayToolTip());
+
+            _flyoutViewModel = new FlyoutViewModel(RecordingCollectionViewModel, () => _trayIcon.SetFocus(), _settings);
             FlyoutWindow = new FlyoutWindow(_flyoutViewModel);
             // Initialize the FlyoutWindow last because its Show/Hide cycle will pump messages, causing UI frames
             // to be executed, breaking the assumption that startup is complete.
@@ -299,9 +305,25 @@ namespace EarTrumpet
 
             _trayIcon.PrimaryInvoke += (_, type) => _flyoutViewModel.OpenFlyout(type);
             _trayIcon.SecondaryInvoke += (_, __) => _trayIcon.ShowContextMenu(GetTrayContextMenuItems());
-            _trayIcon.TertiaryInvoke += (_, __) => CollectionViewModel.Default?.ToggleMute.Execute(null);
-            _trayIcon.Scrolled += (_, wheelDelta) => CollectionViewModel.Default?.IncrementVolume(Math.Sign(wheelDelta) * 2);
-            _trayIcon.SetTooltip(CollectionViewModel.GetTrayToolTip());
+            _trayIcon.TertiaryInvoke += (_, __) =>
+            {
+                var device = RecordingCollectionViewModel.AllDevices.FirstOrDefault((d) => d.DeviceDescription == "Digital-In");
+
+                if (device != null)
+                {
+                    device.IsMuted = !device.IsMuted;
+                }
+            };
+            _trayIcon.Scrolled += (_, wheelDelta) =>
+            {
+                var device = RecordingCollectionViewModel.AllDevices.FirstOrDefault((d) => d.DeviceDescription == "Digital-In");
+
+                if (device != null)
+                {
+                    device.IncrementVolume(Math.Sign(wheelDelta) * 2);
+                }
+            };
+            _trayIcon.SetTooltip(RecordingCollectionViewModel.GetTrayToolTip());
             _trayIcon.IsVisible = true;
 
             DisplayFirstRunExperience();
@@ -478,11 +500,11 @@ namespace EarTrumpet
             return category;
         }
 
-        private Window CreateMixerExperience() => new FullWindow { DataContext = new FullWindowViewModel(CollectionViewModel) };
+        private Window CreateMixerExperience() => new FullWindow { DataContext = new FullWindowViewModel(RecordingCollectionViewModel) };
 
         private void AbsoluteVolumeIncrement()
         {
-            foreach (var device in CollectionViewModel.AllDevices.Where(d => !d.IsMuted || d.IsAbsMuted))
+            foreach (var device in RecordingCollectionViewModel.AllDevices.Where(d => !d.IsMuted || d.IsAbsMuted))
             {
                 // in any case this device is not abs muted anymore
                 device.IsAbsMuted = false;
@@ -492,7 +514,7 @@ namespace EarTrumpet
 
         private void AbsoluteVolumeDecrement()
         {
-            foreach (var device in CollectionViewModel.AllDevices.Where(d => !d.IsMuted))
+            foreach (var device in RecordingCollectionViewModel.AllDevices.Where(d => !d.IsMuted))
             {
                 // if device is not muted but will be muted by 
                 bool wasMuted = device.IsMuted;

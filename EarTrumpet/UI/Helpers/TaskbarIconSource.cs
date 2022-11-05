@@ -1,10 +1,13 @@
 ﻿using EarTrumpet.DataModel;
+using EarTrumpet.Extensions;
 using EarTrumpet.Interop;
 using EarTrumpet.Interop.Helpers;
 using EarTrumpet.UI.ViewModels;
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Linq;
+using static EarTrumpet.UI.ViewModels.DeviceViewModel;
 
 namespace EarTrumpet.UI.Helpers
 {
@@ -175,6 +178,47 @@ namespace EarTrumpet.UI.Helpers
                         return IconKind.SpeakerTwoBars;
                     case DeviceViewModel.DeviceIconKind.Bar3:
                         return IconKind.SpeakerThreeBars;
+                    case DeviceViewModel.DeviceIconKind.Microphone:
+                        // This is a huge hack, copied/adapted from DeviceViewModel.UpdateMasterVolumeIcon()
+                        var _device = collectionViewModel.AllDevices.FirstOrDefault((d) => d.DeviceDescription == "Digital-In");
+
+                        if (_device == null)
+                        {
+                            return IconKind.NoDevice;
+                        }
+
+                        var isOnWindows11 = Environment.OSVersion.IsAtLeast(OSVersions.Windows11);
+
+                        // _device.Volume is in [0, 100]
+
+                        if (_device.IsMuted)
+                        {
+                            return IconKind.Muted;
+                        }
+                        else if (isOnWindows11 && (_device.Volume > 66))
+                        {
+                            return IconKind.SpeakerThreeBars;
+                        }
+                        else if (!isOnWindows11 && (_device.Volume >= 66))
+                        {
+                            return IconKind.SpeakerThreeBars;
+                        }
+                        else if (isOnWindows11 && (_device.Volume > 33))
+                        {
+                            return IconKind.SpeakerTwoBars;
+                        }
+                        else if (!isOnWindows11 && (_device.Volume >= 33))
+                        {
+                            return IconKind.SpeakerTwoBars;
+                        }
+                        else if (_device.Volume > 0.00f)
+                        {
+                            return IconKind.SpeakerOneBar;
+                        }
+                        else
+                        {
+                            return IconKind.SpeakerZeroBars;
+                        }
                     default: throw new NotImplementedException();
                 }
             }

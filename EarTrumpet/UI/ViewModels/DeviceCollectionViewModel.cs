@@ -21,6 +21,7 @@ namespace EarTrumpet.UI.ViewModels
 
         public ObservableCollection<DeviceViewModel> AllDevices { get; private set; } = new ObservableCollection<DeviceViewModel>();
         public DeviceViewModel Default { get; private set; }
+        public DeviceViewModel Tv { get; private set; }
 
         private readonly IAudioDeviceManager _deviceManager;
         private readonly Timer _peakMeterTimer;
@@ -58,6 +59,10 @@ namespace EarTrumpet.UI.ViewModels
                 }
                 SetDefault(device);
             }
+
+            // This is a huge hack, relying on default device changing (or being set for the first time)
+            // to set the tv device.
+            SetTv();
         }
 
         private void SetDefault(DeviceViewModel device)
@@ -85,6 +90,33 @@ namespace EarTrumpet.UI.ViewModels
                 e.PropertyName == nameof(Default.Volume) ||
                 e.PropertyName == nameof(Default.IsMuted) ||
                 e.PropertyName == nameof(Default.DisplayName))
+            {
+                TrayPropertyChanged.Invoke();
+            }
+        }
+
+        // Huge hack where we find the tv.
+        private void SetTv()
+        {
+            if (Tv != null)
+            {
+                return;
+            }
+
+            var device = AllDevices.FirstOrDefault((d) => d.DeviceDescription == "Digital-In");
+
+            if (device != null)
+            {
+                Tv = device;
+                Tv.PropertyChanged += OnTvDevicePropertyChanged;
+            }
+        }
+
+        private void OnTvDevicePropertyChanged(object sender, PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName == nameof(Tv.Volume) ||
+                e.PropertyName == nameof(Tv.IsMuted) ||
+                e.PropertyName == nameof(Tv.DisplayName))
             {
                 TrayPropertyChanged.Invoke();
             }
